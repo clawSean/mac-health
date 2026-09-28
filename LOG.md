@@ -9,3 +9,4 @@
   `gpu_power` samplers; current built-in tools do not expose exact CPU/GPU die temperatures.
 - Passed zsh syntax checks, live snapshot/watch checks, the two-sample smoke test, and
   three-row CSV proof on an M3 Max running macOS 26.6.1.
+- Published the canonical project to `https://github.com/clawSean/mac-health`.

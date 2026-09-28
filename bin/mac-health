@@ -6,54 +6,123 @@ SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/../lib/metrics.zsh"
 
 PRIVILEGED=0
-case "${1:-}" in
-  --privileged|-p) PRIVILEGED=1 ;;
-  --help|-h)
-    cat <<'EOF'
-Usage: mac-health [--privileged]
+EXTENDED=0
+JSON=0
+
+usage() {
+  cat <<'EOF'
+Usage: mac-health [--extended] [--json] [--privileged]
 
 Print a one-shot Apple silicon Mac health and throttling snapshot.
 
+  -e, --extended    Add a one-second disk sample, network path probes,
+                    OpenClaw queue/SQLite health, and recent fault history.
+      --json        Emit stable schema-versioned JSON for automation.
   -p, --privileged  Prompt for sudo and include powermetrics frequency,
-                    power-limit, power, and thermal-pressure telemetry.
+                    power-limit, GPU/ANE power, and per-process I/O telemetry.
   -h, --help        Show this help.
-EOF
-    exit 0
-    ;;
-  "") ;;
-  *) print -u2 -- "Unknown option: $1"; exit 2 ;;
-esac
 
-mh_collect_all
+The default path is fast, read-only, and never prompts. --extended is slower
+but remains unprivileged. --json and --privileged cannot be combined.
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    -e|--extended) EXTENDED=1 ;;
+    --json) JSON=1 ;;
+    -p|--privileged) PRIVILEGED=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) print -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if (( JSON && PRIVILEGED )); then
+  print -u2 -- "--json and --privileged cannot be combined; privileged powermetrics is interactive."
+  exit 2
+fi
+
+mh_collect_all "$EXTENDED"
 mh_assess
+
+print_json() {
+  print -- "{"
+  print -- "  \"schemaVersion\": 1,"
+  print -- "  \"timestamp\": $(mh_json_string "$MH_TIMESTAMP_ISO"),"
+  print -- "  \"extended\": $([[ "$MH_EXTENDED" == 1 ]] && print true || print false),"
+  print -- "  \"assessment\": {"
+  print -- "    \"level\": $(mh_json_string "$MH_WORST"),"
+  print -- "    \"findings\": ["
+  local finding separator=""
+  for finding in "${MH_FINDINGS[@]}"; do
+    print -nr -- "$separator      {\"severity\": $(mh_json_string "${finding%%|*}"), \"message\": $(mh_json_string "${finding#*|}")}"
+    separator=$',\n'
+  done
+  print
+  print -- "    ]"
+  print -- "  },"
+  print -- "  \"system\": {\"model\": $(mh_json_string "$MH_MODEL"), \"uptime\": $(mh_json_string "$MH_UPTIME"), \"physicalCores\": $(mh_json_number "$MH_PHYSICAL_CORES"), \"logicalCores\": $(mh_json_number "$MH_LOGICAL_CORES")},"
+  print -- "  \"cpu\": {\"busyPct\": $(mh_json_number "$MH_CPU_BUSY"), \"userPct\": $(mh_json_number "$MH_CPU_USER"), \"systemPct\": $(mh_json_number "$MH_CPU_SYS"), \"idlePct\": $(mh_json_number "$MH_CPU_IDLE"), \"load1\": $(mh_json_number "$MH_LOAD_1"), \"load5\": $(mh_json_number "$MH_LOAD_5"), \"load15\": $(mh_json_number "$MH_LOAD_15"), \"loadPerCore\": $(mh_json_number "$MH_LOAD_PER_CORE"), \"stuckProcesses\": $(mh_json_number "$MH_STUCK_PROCESSES")},"
+  print -- "  \"memory\": {\"installedGb\": $(mh_json_number "$MH_MEMORY_TOTAL_GB"), \"pressureFreePct\": $(mh_json_number "$MH_MEMORY_FREE_PCT"), \"compressedMb\": $(mh_json_number "$MH_MEMORY_COMPRESSED_MB"), \"swapUsedMb\": $(mh_json_number "$MH_SWAP_USED_MB"), \"swapTotalMb\": $(mh_json_number "$MH_SWAP_TOTAL_MB"), \"pageIns\": $(mh_json_number "$MH_PAGEINS"), \"pageOuts\": $(mh_json_number "$MH_PAGEOUTS"), \"swapIns\": $(mh_json_number "$MH_SWAPINS"), \"swapOuts\": $(mh_json_number "$MH_SWAPOUTS")},"
+  print -- "  \"thermal\": {\"thermalState\": $(mh_json_string "$MH_THERMAL_STATE"), \"performanceState\": $(mh_json_string "$MH_PERFORMANCE_STATE"), \"lowPowerMode\": $(mh_json_bool "$MH_LOW_POWER_MODE")},"
+  print -- "  \"battery\": {\"percent\": $(mh_json_number "$MH_BATTERY_PCT"), \"state\": $(mh_json_string "$MH_BATTERY_STATE"), \"temperatureC\": $(mh_json_number "$MH_BATTERY_TEMP_C"), \"cycleCount\": $(mh_json_number "$MH_CYCLE_COUNT"), \"externalPower\": $(mh_json_bool "$MH_EXTERNAL_POWER"), \"batteryWatts\": $(mh_json_number "$MH_BATTERY_WATTS"), \"adapterWatts\": $(mh_json_number "$MH_ADAPTER_WATTS")},"
+  print -- "  \"disk\": {\"freeGb\": $(mh_json_number "$MH_DISK_FREE_GB"), \"freePct\": $(mh_json_number "$MH_DISK_FREE_PCT"), \"smartStatus\": $(mh_json_string "$MH_DISK_SMART"), \"solidState\": $(mh_json_string "$MH_DISK_SOLID_STATE"), \"sample\": {\"device\": $(mh_json_string "$MH_DISK_IO_DEVICE"), \"mbPerSec\": $(mh_json_number "$MH_DISK_MB_PER_SEC"), \"transfersPerSec\": $(mh_json_number "$MH_DISK_TRANSFERS_PER_SEC"), \"kbPerTransfer\": $(mh_json_number "$MH_DISK_KB_PER_TRANSFER"), \"latencyMs\": null}},"
+  print -- "  \"gpu\": {\"deviceUtilizationPct\": $(mh_json_number "$MH_GPU_DEVICE_UTIL_PCT"), \"rendererUtilizationPct\": $(mh_json_number "$MH_GPU_RENDERER_UTIL_PCT"), \"tilerUtilizationPct\": $(mh_json_number "$MH_GPU_TILER_UTIL_PCT"), \"systemMemoryMb\": $(mh_json_number "$MH_GPU_MEMORY_MB"), \"aneUtilizationPct\": null},"
+  print -- "  \"network\": {\"interface\": $(mh_json_string "$MH_NETWORK_INTERFACE"), \"rxBytes\": $(mh_json_number "$MH_NETWORK_RX_BYTES"), \"txBytes\": $(mh_json_number "$MH_NETWORK_TX_BYTES"), \"rxErrors\": $(mh_json_number "$MH_NETWORK_RX_ERRORS"), \"txErrors\": $(mh_json_number "$MH_NETWORK_TX_ERRORS"), \"drops\": $(mh_json_number "$MH_NETWORK_DROPS"), \"dnsOk\": $(mh_json_bool "$MH_DNS_OK"), \"dnsLatencyMs\": $(mh_json_number "$MH_DNS_LATENCY_MS"), \"lanGatewayRttMs\": $(mh_json_number "$MH_LAN_GATEWAY_RTT_MS"), \"tailscaleBackend\": $(mh_json_string "$MH_TAILSCALE_BACKEND"), \"tailscaleOnlinePeers\": $(mh_json_number "$MH_TAILSCALE_ONLINE_PEERS")},"
+  print -- "  \"openclaw\": {\"available\": $(mh_json_bool "$MH_OC_AVAILABLE"), \"gateway\": {\"pid\": $(mh_json_number "$MH_OC_GATEWAY_PID"), \"cpuPct\": $(mh_json_number "$MH_OC_GATEWAY_CPU_PCT"), \"cpuCores\": $(mh_json_number "$MH_OC_GATEWAY_CPU_CORES"), \"memoryPct\": $(mh_json_number "$MH_OC_GATEWAY_MEMORY_PCT"), \"rssMb\": $(mh_json_number "$MH_OC_GATEWAY_RSS_MB"), \"threads\": $(mh_json_number "$MH_OC_GATEWAY_THREADS"), \"fileDescriptors\": $(mh_json_number "$MH_OC_GATEWAY_FDS"), \"uptime\": $(mh_json_string "$MH_OC_GATEWAY_UPTIME"), \"healthOk\": $(mh_json_bool "$MH_OC_HEALTH_OK"), \"healthDurationMs\": $(mh_json_number "$MH_OC_HEALTH_DURATION_MS"), \"cliRoundTripMs\": $(mh_json_number "$MH_OC_HEALTH_CLI_MS")}, \"tasks\": {\"active\": $(mh_json_number "$MH_OC_TASKS_ACTIVE"), \"queued\": $(mh_json_number "$MH_OC_TASKS_QUEUED"), \"running\": $(mh_json_number "$MH_OC_TASKS_RUNNING"), \"historicalFailures\": $(mh_json_number "$MH_OC_TASK_FAILURES_TOTAL")}, \"deliveryFailures\": $(mh_json_number "$MH_OC_DELIVERY_FAILURES"), \"logKb\": $(mh_json_number "$MH_OC_LOG_KB"), \"sqlite\": {\"queryOk\": $(mh_json_bool "$MH_OC_SQLITE_QUERY_OK"), \"queryLatencyMs\": $(mh_json_number "$MH_OC_SQLITE_QUERY_MS"), \"walWarning\": $(mh_json_bool "$MH_OC_SQLITE_WAL_WARNING"), \"walBytes\": $(mh_json_number "$MH_OC_SQLITE_WAL_BYTES"), \"consecutiveBlocked\": $(mh_json_number "$MH_OC_SQLITE_BLOCKED")}},"
+  print -- "  \"recentFaults\": {\"panicOrForcedRebootReports7d\": $(mh_json_number "$MH_PANIC_REPORTS_7D"), \"hangOrSpinReports7d\": $(mh_json_number "$MH_HANG_REPORTS_7D"), \"sleepWakeFailures7d\": $(mh_json_number "$MH_SLEEP_WAKE_FAILURES_7D"), \"thermalShutdowns7d\": $(mh_json_number "$MH_THERMAL_SHUTDOWNS_7D"), \"forcedReboots7d\": $(mh_json_number "$MH_FORCED_REBOOTS_7D"), \"storageIoOrThermalEvents24h\": $(mh_json_number "$MH_STORAGE_IO_ERRORS_24H"), \"unifiedLogStatus\": $(mh_json_string "$MH_UNIFIED_LOG_STATUS")}"
+  print -- "}"
+}
+
+if (( JSON )); then
+  print_json
+  exit 0
+fi
 
 print -- "Mac health snapshot — $MH_TIMESTAMP"
 print -- "============================================================"
 print -- "System       $MH_MODEL | ${MH_PHYSICAL_CORES} physical / ${MH_LOGICAL_CORES} logical cores | uptime $MH_UPTIME"
 print -- "CPU          ${MH_CPU_BUSY}% busy (${MH_CPU_USER}% user, ${MH_CPU_SYS}% system, ${MH_CPU_IDLE}% idle)"
 print -- "Load         $MH_LOAD_1 / $MH_LOAD_5 / $MH_LOAD_15 | ${MH_LOAD_PER_CORE}× cores at 1 minute"
-print -- "Memory       ${MH_MEMORY_FREE_PCT}% free by pressure accounting | ${MH_MEMORY_TOTAL_GB} GB installed"
+print -- "Memory       ${MH_MEMORY_FREE_PCT}% free by pressure | ${MH_MEMORY_COMPRESSED_MB} MB compressed | ${MH_MEMORY_TOTAL_GB} GB installed"
 print -- "Swap         ${MH_SWAP_USED_MB} / ${MH_SWAP_TOTAL_MB} MB used | cumulative swapouts $MH_SWAPOUTS"
-print -- "Battery      ${MH_BATTERY_PCT}% | $MH_BATTERY_STATE | ${MH_BATTERY_TEMP_C}°C / ${MH_BATTERY_TEMP_F}°F | cycles $MH_CYCLE_COUNT"
+print -- "Battery      ${MH_BATTERY_PCT}% | $MH_BATTERY_STATE | ${MH_BATTERY_TEMP_C}°C / ${MH_BATTERY_TEMP_F}°F | battery ${MH_BATTERY_WATTS} W | adapter ${MH_ADAPTER_WATTS} W"
 print -- "Thermals     thermal=$MH_THERMAL_STATE | performance=$MH_PERFORMANCE_STATE | low-power-mode=$MH_LOW_POWER_MODE"
-print -- "Startup disk ${MH_DISK_FREE_GB} GB free (${MH_DISK_FREE_PCT}%)"
+print -- "Startup disk ${MH_DISK_FREE_GB} GB free (${MH_DISK_FREE_PCT}%) | SMART=$MH_DISK_SMART | SSD=$MH_DISK_SOLID_STATE"
+print -- "GPU          device=${MH_GPU_DEVICE_UTIL_PCT}% | renderer=${MH_GPU_RENDERER_UTIL_PCT}% | tiler=${MH_GPU_TILER_UTIL_PCT}% | memory=${MH_GPU_MEMORY_MB} MB"
+print -- "Network      $MH_NETWORK_INTERFACE | rx-errors=$MH_NETWORK_RX_ERRORS | tx-errors=$MH_NETWORK_TX_ERRORS | drops=$MH_NETWORK_DROPS"
+if [[ "$MH_OC_GATEWAY_PID" != "unknown" ]]; then
+  print -- "OpenClaw     gateway pid=$MH_OC_GATEWAY_PID | cpu=${MH_OC_GATEWAY_CPU_PCT}% (${MH_OC_GATEWAY_CPU_CORES} cores) | rss=${MH_OC_GATEWAY_RSS_MB} MB | threads=$MH_OC_GATEWAY_THREADS | fds=$MH_OC_GATEWAY_FDS"
+else
+  print -- "OpenClaw     gateway not detected on port ${MH_OPENCLAW_PORT:-18789}"
+fi
+
+if (( EXTENDED )); then
+  print -- ""
+  print -- "Extended diagnostics"
+  print -- "--------------------"
+  print -- "Disk I/O     $MH_DISK_IO_DEVICE | ${MH_DISK_MB_PER_SEC} MB/s | ${MH_DISK_TRANSFERS_PER_SEC} transfers/s | ${MH_DISK_KB_PER_TRANSFER} KB/transfer"
+  print -- "Network path DNS=${MH_DNS_LATENCY_MS} ms (ok=$MH_DNS_OK) | LAN gateway=${MH_LAN_GATEWAY_RTT_MS} ms | Tailscale=$MH_TAILSCALE_BACKEND (${MH_TAILSCALE_ONLINE_PEERS} peers)"
+  print -- "OC health    ok=$MH_OC_HEALTH_OK | gateway internal=${MH_OC_HEALTH_DURATION_MS} ms | CLI round trip=${MH_OC_HEALTH_CLI_MS} ms | delivery failures=$MH_OC_DELIVERY_FAILURES"
+  print -- "OC tasks     active=$MH_OC_TASKS_ACTIVE | queued=$MH_OC_TASKS_QUEUED | running=$MH_OC_TASKS_RUNNING | historical failures=$MH_OC_TASK_FAILURES_TOTAL"
+  print -- "OC SQLite    query=${MH_OC_SQLITE_QUERY_MS} ms (ok=$MH_OC_SQLITE_QUERY_OK) | WAL warning=$MH_OC_SQLITE_WAL_WARNING | blocked=$MH_OC_SQLITE_BLOCKED | WAL bytes=$MH_OC_SQLITE_WAL_BYTES"
+  print -- "Recent faults panic/reboot reports=$MH_PANIC_REPORTS_7D | hangs/spins=$MH_HANG_REPORTS_7D | sleep/wake failures=$MH_SLEEP_WAKE_FAILURES_7D | thermal shutdowns=$MH_THERMAL_SHUTDOWNS_7D"
+  print -- "Unified log  status=$MH_UNIFIED_LOG_STATUS | I/O or thermal events (24h)=$MH_STORAGE_IO_ERRORS_24H"
+  print -- "Note         Native iostat has no latency/per-process split; privileged powermetrics adds per-process I/O."
+fi
 
 print -- ""
 print -- "Assessment"
 print -- "----------"
 local finding
-for finding in "${MH_FINDINGS[@]}"; do
-  print -- "[${finding%%|*}] ${finding#*|}"
-done
+for finding in "${MH_FINDINGS[@]}"; do print -- "[${finding%%|*}] ${finding#*|}"; done
 
 print -- ""
 print -- "Top CPU processes"
 print -- "-----------------"
 printf '%-7s %7s %7s %9s  %s\n' PID CPU% MEM% RSS-MB COMMAND
-ps -Ao pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null \
-  | sort -k2 -nr \
-  | head -8 \
-  | awk '{rss=$4/1024; cmd=$5; for(i=6;i<=NF;i++) cmd=cmd " " $i; printf "%-7s %7s %7s %9.1f  %s\n",$1,$2,$3,rss,cmd}'
+ps -Ao pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null | sort -k2 -nr | head -8 | awk '{rss=$4/1024; cmd=$5; for(i=6;i<=NF;i++) cmd=cmd " " $i; printf "%-7s %7s %7s %9.1f  %s\n",$1,$2,$3,rss,cmd}'
 
 print -- ""
 print -- "Thermal evidence"
@@ -65,12 +134,12 @@ if (( PRIVILEGED )); then
   print -- "Privileged powermetrics sample"
   print -- "------------------------------"
   print -- "This one-second sample may prompt for your macOS password."
-  sudo powermetrics --samplers thermal,cpu_power,gpu_power --show-plimits -n 1 -i 1000 2>&1 \
-    | grep -E '^[[:space:]]*(CPU|GPU|ANE|Thermal|Combined Power|Package Power|System Average)' \
-    || true
+  sudo powermetrics --samplers tasks,thermal,cpu_power,gpu_power,ane_power,disk,network --show-plimits --show-process-io -n 1 -i 1000 2>&1 |
+    grep -E 'CPU Power|GPU Power|ANE Power|Combined Power|Average frequency|power limit|Thermal pressure|Disk|Network|bytes read|bytes written|read/write' |
+    head -160 || true
 else
   print -- ""
-  print -- "For privileged frequency, power-limit, power, and thermal-pressure telemetry:"
-  print -- "  $0 --privileged"
+  print -- "More: $0 --extended | JSON: $0 --extended --json"
+  print -- "Privileged GPU/ANE power, clocks, power limits, and per-process I/O: $0 --privileged"
   print -- "Exact CPU/GPU die temperatures are not exposed by built-in tools on this macOS release."
 fi

@@ -1,6 +1,7 @@
 #!/bin/zsh
 
 set -u
+zmodload zsh/datetime
 
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/../lib/metrics.zsh"
@@ -13,7 +14,8 @@ usage() {
   cat <<'EOF'
 Usage: mac-health-watch [-i seconds] [-n samples] [--csv path]
 
-Sample the signals that distinguish sustained pressure from a momentary spike.
+Trend CPU, memory, swap/pageout growth, disk and network throughput, GPU load,
+OpenClaw Gateway load/log growth, battery heat, and thermal state.
 Defaults to 12 samples at 5-second intervals (about one minute).
 
   -i, --interval N  Seconds between samples (minimum 1)
@@ -43,26 +45,46 @@ if ! [[ "$SAMPLES" == <-> ]] || (( SAMPLES < 2 )); then
 fi
 
 if [[ -n "$CSV" ]]; then
-  print -- 'timestamp,cpu_busy_pct,load_1,load_per_core,memory_free_pct,swap_used_mb,swapouts,battery_temp_c,thermal_state,performance_state,stuck_processes' > "$CSV"
+  print -- 'timestamp,cpu_busy_pct,load_1,load_per_core,memory_free_pct,compressed_mb,swap_used_mb,swapouts,pageouts,disk_mb_s,network_mb_s,gpu_util_pct,openclaw_cpu_pct,openclaw_rss_mb,openclaw_log_kb,battery_temp_c,thermal_state,performance_state,stuck_processes' > "$CSV"
 fi
 
 print -- "Mac pressure watch — $SAMPLES samples every ${INTERVAL}s"
-printf '%-9s %7s %7s %8s %8s %10s %9s %9s %s\n' TIME CPU% LOAD1 LOAD/CORE MEMFREE SWAP-MB SWAPOUTS BATT-C STATE
+printf '%-9s %6s %7s %7s %8s %8s %8s %6s %6s %s\n' TIME CPU% LOAD/C MEMFREE SWAP-MB DISK-MB NET-MB GPU% OC-CPU STATE
 
 typeset -i i=1 warnings=0
-typeset -F 1 max_cpu=0
+typeset -F 1 max_cpu=0 max_disk_rate=0 max_oc_cpu=0
+typeset -F 2 max_net_rate=0
 typeset -F 2 max_load_per_core=0
-typeset -F 0 min_mem=100
+typeset -F 0 min_mem=100 max_gpu=0
 typeset -F 1 max_battery=0
-typeset -i first_swapouts=0 last_swapouts=0
+typeset -i first_swapouts=0 last_swapouts=0 first_pageouts=0 last_pageouts=0
+typeset -i first_net_errors=0 last_net_errors=0
+typeset -F 3 previous_time=0 previous_disk_mb=0
+typeset -i previous_network_bytes=0 first_log_kb=0 last_log_kb=0
 
 while (( i <= SAMPLES )); do
+  local sample_time="$EPOCHREALTIME"
   mh_cpu_sample
   mh_memory_sample
   mh_battery_sample
   mh_thermal_sample
+  mh_disk_counter_sample
+  mh_network_counter_sample
+  mh_gpu_sample
+  mh_openclaw_process_sample
 
-  local state="OK"
+  local elapsed=0 disk_rate=0 net_rate=0 state="OK"
+  local network_bytes=$(( MH_NETWORK_RX_BYTES + MH_NETWORK_TX_BYTES ))
+  local network_errors=$(( MH_NETWORK_RX_ERRORS + MH_NETWORK_TX_ERRORS ))
+  if (( i > 1 )); then
+    elapsed="$(awk -v now="$sample_time" -v prev="$previous_time" 'BEGIN {d=now-prev; if(d<=0)d=1; printf "%.3f",d}')"
+    disk_rate="$(awk -v now="$MH_DISK_TOTAL_MB" -v prev="$previous_disk_mb" -v s="$elapsed" 'BEGIN {d=now-prev; if(d<0)d=0; printf "%.1f",d/s}')"
+    net_rate="$(awk -v now="$network_bytes" -v prev="$previous_network_bytes" -v s="$elapsed" 'BEGIN {d=now-prev; if(d<0)d=0; printf "%.2f",d/s/1048576}')"
+  fi
+  previous_time="$sample_time"
+  previous_disk_mb="$MH_DISK_TOTAL_MB"
+  previous_network_bytes="$network_bytes"
+
   if [[ "$MH_THERMAL_STATE" != "clear" || "$MH_PERFORMANCE_STATE" != "clear" ]]; then
     state="THERMAL"
     (( warnings++ ))
@@ -73,42 +95,63 @@ while (( i <= SAMPLES )); do
     state="LOW-POWER"
   fi
 
-  (( i == 1 )) && first_swapouts=$MH_SWAPOUTS
+  if (( i == 1 )); then
+    first_swapouts=$MH_SWAPOUTS
+    first_pageouts=$MH_PAGEOUTS
+    first_net_errors=$network_errors
+    [[ "$MH_OC_LOG_KB" == <-> ]] && first_log_kb=$MH_OC_LOG_KB
+  fi
   last_swapouts=$MH_SWAPOUTS
+  last_pageouts=$MH_PAGEOUTS
+  last_net_errors=$network_errors
+  [[ "$MH_OC_LOG_KB" == <-> ]] && last_log_kb=$MH_OC_LOG_KB
+
   mh_float_gt "$MH_CPU_BUSY" "$max_cpu" && max_cpu=$MH_CPU_BUSY
   mh_float_gt "$MH_LOAD_PER_CORE" "$max_load_per_core" && max_load_per_core=$MH_LOAD_PER_CORE
   mh_float_lt "$MH_MEMORY_FREE_PCT" "$min_mem" && min_mem=$MH_MEMORY_FREE_PCT
-  if [[ "$MH_BATTERY_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_BATTERY_TEMP_C" "$max_battery"; then
-    max_battery=$MH_BATTERY_TEMP_C
-  fi
+  mh_float_gt "$disk_rate" "$max_disk_rate" && max_disk_rate=$disk_rate
+  mh_float_gt "$net_rate" "$max_net_rate" && max_net_rate=$net_rate
+  [[ "$MH_GPU_DEVICE_UTIL_PCT" != "unknown" ]] && mh_float_gt "$MH_GPU_DEVICE_UTIL_PCT" "$max_gpu" && max_gpu=$MH_GPU_DEVICE_UTIL_PCT
+  [[ "$MH_OC_GATEWAY_CPU_PCT" != "unknown" ]] && mh_float_gt "$MH_OC_GATEWAY_CPU_PCT" "$max_oc_cpu" && max_oc_cpu=$MH_OC_GATEWAY_CPU_PCT
+  if [[ "$MH_BATTERY_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_BATTERY_TEMP_C" "$max_battery"; then max_battery=$MH_BATTERY_TEMP_C; fi
 
-  printf '%-9s %7s %7s %8s %7s%% %10s %9s %9s %s\n' \
-    "$(date '+%H:%M:%S')" "$MH_CPU_BUSY" "$MH_LOAD_1" "$MH_LOAD_PER_CORE" \
-    "$MH_MEMORY_FREE_PCT" "$MH_SWAP_USED_MB" "$MH_SWAPOUTS" "$MH_BATTERY_TEMP_C" "$state"
+  printf '%-9s %6s %7s %6s%% %8s %8s %8s %6s %6s %s\n' \
+    "$(date '+%H:%M:%S')" "$MH_CPU_BUSY" "$MH_LOAD_PER_CORE" "$MH_MEMORY_FREE_PCT" \
+    "$MH_SWAP_USED_MB" "$disk_rate" "$net_rate" "$MH_GPU_DEVICE_UTIL_PCT" "$MH_OC_GATEWAY_CPU_PCT" "$state"
 
   if [[ -n "$CSV" ]]; then
-    print -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ'),$MH_CPU_BUSY,$MH_LOAD_1,$MH_LOAD_PER_CORE,$MH_MEMORY_FREE_PCT,$MH_SWAP_USED_MB,$MH_SWAPOUTS,$MH_BATTERY_TEMP_C,$MH_THERMAL_STATE,$MH_PERFORMANCE_STATE,$MH_STUCK_PROCESSES" >> "$CSV"
+    print -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ'),$MH_CPU_BUSY,$MH_LOAD_1,$MH_LOAD_PER_CORE,$MH_MEMORY_FREE_PCT,$MH_MEMORY_COMPRESSED_MB,$MH_SWAP_USED_MB,$MH_SWAPOUTS,$MH_PAGEOUTS,$disk_rate,$net_rate,$MH_GPU_DEVICE_UTIL_PCT,$MH_OC_GATEWAY_CPU_PCT,$MH_OC_GATEWAY_RSS_MB,$MH_OC_LOG_KB,$MH_BATTERY_TEMP_C,$MH_THERMAL_STATE,$MH_PERFORMANCE_STATE,$MH_STUCK_PROCESSES" >> "$CSV"
   fi
 
   (( i++ ))
-  (( i <= SAMPLES )) && sleep "$INTERVAL"
+  if (( i <= SAMPLES )); then
+    local work_elapsed delay
+    work_elapsed="$(awk -v now="$EPOCHREALTIME" -v start="$sample_time" 'BEGIN {printf "%.3f",now-start}')"
+    delay="$(awk -v interval="$INTERVAL" -v work="$work_elapsed" 'BEGIN {d=interval-work; if(d<0)d=0; printf "%.3f",d}')"
+    mh_float_gt "$delay" 0 && sleep "$delay"
+  fi
 done
 
 local swapout_delta=$(( last_swapouts - first_swapouts ))
+local pageout_delta=$(( last_pageouts - first_pageouts ))
+local network_error_delta=$(( last_net_errors - first_net_errors ))
+local log_delta=$(( last_log_kb - first_log_kb ))
 print -- ""
 print -- "Watch summary"
 print -- "-------------"
-printf 'Peak CPU busy: %.1f%% | peak load/core: %.2f×\n' "$max_cpu" "$max_load_per_core"
-printf 'Lowest memory free: %.0f%% | new swapouts: %d | peak battery: %.1f°C\n' "$min_mem" "$swapout_delta" "$max_battery"
+printf 'Peak CPU: %.1f%% | peak load/core: %.2f× | lowest memory free: %.0f%%\n' "$max_cpu" "$max_load_per_core" "$min_mem"
+printf 'Peak disk: %.1f MB/s | peak network: %.2f MB/s | peak GPU: %.0f%% | peak OpenClaw CPU: %.1f%%\n' "$max_disk_rate" "$max_net_rate" "$max_gpu" "$max_oc_cpu"
+printf 'New swapouts: %d | new pageouts: %d | new network errors: %d | OpenClaw log growth: %d KB | peak battery: %.1f°C\n' "$swapout_delta" "$pageout_delta" "$network_error_delta" "$log_delta" "$max_battery"
 
 if (( warnings > 0 )); then
-  print -- "[WARN] $warnings/$SAMPLES samples crossed a pressure threshold. Run mac-health --privileged if heat is the suspected cause."
-elif (( swapout_delta > 0 )); then
-  print -- "[INFO] No thermal warning, but swapouts increased during the window; memory pressure may be contributing to latency."
+  print -- "[WARN] $warnings/$SAMPLES samples crossed a pressure threshold. Run mac-health --extended, then --privileged if heat or power limiting is suspected."
+elif (( swapout_delta > 0 || pageout_delta > 0 )); then
+  print -- "[INFO] No thermal warning, but VM pageouts/swapouts increased; memory pressure may be contributing to latency."
+elif (( network_error_delta > 0 )); then
+  print -- "[INFO] Network-interface errors increased during the window."
 else
-  print -- "[OK] No sustained thermal/throttling signal or memory-pressure growth was observed."
+  print -- "[OK] No sustained thermal/throttling signal, VM-pressure growth, or increasing network errors were observed."
 fi
 
 [[ -n "$CSV" ]] && print -- "CSV written to: $CSV"
-
 exit 0

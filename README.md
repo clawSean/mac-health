@@ -11,10 +11,16 @@ packages, agents, daemons, or background services required.
 
 - CPU utilization, load averages, core-normalized scheduling pressure, and top processes
 - macOS thermal and performance warnings (the strongest non-root throttling signal)
-- Memory-pressure percentage, swap use, and swapout growth
-- Battery temperature, charge state, and cycle count
-- Startup-disk headroom, Low Power Mode, stuck-process counts, and uptime
-- Optional privileged CPU/GPU frequency, power-limit, power, and thermal-pressure telemetry
+- Memory pressure, compression, pageouts, swap use, and swapout growth
+- Battery temperature, power flow, adapter wattage, charge state, and cycle count
+- Startup-disk headroom/SMART status, current I/O throughput, and transfer rate
+- GPU utilization/memory plus optional privileged GPU/ANE power telemetry
+- Active-interface counters, DNS/LAN/Tailscale health, and throughput trends
+- OpenClaw Gateway CPU/RAM/threads/file descriptors, task queues, health latency,
+  delivery failures, log growth, and SQLite/WAL health
+- Recent panic/reboot reports, hangs, sleep/wake failures, thermal shutdowns,
+  and storage-I/O log evidence when macOS grants log access
+- Low Power Mode, stuck-process counts, uptime, and top CPU processes
 
 ## Run it
 
@@ -22,14 +28,29 @@ packages, agents, daemons, or background services required.
 ./bin/mac-health
 ```
 
-For CPU/GPU frequency, power limits, and a second thermal-pressure view, request a
-one-second privileged sample:
+Add the slower one-second disk sample, network path checks, OpenClaw internals,
+and recent fault history:
+
+```bash
+./bin/mac-health --extended
+```
+
+Emit stable schema-versioned JSON for WatchCatfish or other automation:
+
+```bash
+./bin/mac-health --extended --json
+```
+
+For CPU/GPU/ANE power, frequency, power limits, per-process I/O, and a second
+thermal-pressure view, request a one-second privileged sample:
 
 ```bash
 ./bin/mac-health --privileged
 ```
 
-Watch for sustained pressure for about one minute:
+Watch for sustained pressure for about one minute. The trend includes disk and
+network throughput, GPU pressure, OpenClaw Gateway load/log growth, pageouts,
+swapouts, and packet-error growth:
 
 ```bash
 ./bin/mac-health-watch
@@ -47,19 +68,31 @@ Or choose the interval/sample count and save a CSV:
 - **High CPU or load:** the machine is busy; it does not by itself prove thermal throttling.
 - **Low Power Mode:** intentional performance limiting, not heat-driven throttling.
 - **Swap use:** historical swap is normal; rising swapouts during a watch window are more useful.
+- **Disk I/O:** throughput and transfer rate reveal active pressure. Apple's native
+  unprivileged `iostat` does not expose latency or per-process attribution.
+- **OpenClaw:** active/queued work and SQLite/WAL state are current signals;
+  delivery/task failure totals are historical counters and do not alone mean it is unhealthy now.
+- **Gateway CPU:** process CPU may exceed `100%` because macOS reports `100%` per busy core.
 - **Battery temperature:** under `35°C` is comfortable, `40–45°C` deserves attention if sustained,
   and above `45°C` is flagged critical by this tool.
 
-The current macOS built-in tools do not expose exact CPU/GPU die temperatures on this
-machine. The script reports the exact battery sensor temperature and macOS thermal state;
-the privileged path adds clock, power-limit, power, and thermal-pressure telemetry. Those
-signals and performance behavior over time are more diagnostic than one temperature.
+The current macOS built-in tools do not expose exact CPU/GPU die temperatures on
+this machine. The script reports the battery sensor temperature and authoritative
+macOS thermal state. The privileged path adds clocks, power limits, GPU/ANE power,
+thermal pressure, and per-process I/O. Those signals and behavior over time are more
+diagnostic than one temperature.
+
+Recent unified-log searches may report `permission-denied` when the calling shell
+lacks Full Disk Access. That is reported as unavailable—not silently converted to
+zero events.
 
 ## Requirements
 
 - macOS on Apple silicon
-- `/bin/zsh` and built-in macOS tools (`top`, `pmset`, `ioreg`, `memory_pressure`,
-  `vm_stat`, `sysctl`, and optionally `powermetrics`)
+- `/bin/zsh` and built-in macOS tools (`top`, `pmset`, `ioreg`, `iostat`, `netstat`,
+  `memory_pressure`, `vm_stat`, `sysctl`, and optionally `powermetrics`)
+- OpenClaw and Tailscale checks automatically degrade to unavailable when those
+  programs are not installed
 
 ## Test
 
@@ -69,8 +102,10 @@ signals and performance behavior over time are more diagnostic than one temperat
 
 ## Safety
 
-The default path is read-only and unprivileged. `--privileged` uses `sudo` only for a
-single `powermetrics` sample and does not change configuration.
+The default and `--extended` paths are read-only and unprivileged. `--privileged`
+uses `sudo` only for one `powermetrics` sample and does not change configuration.
+Automation should use the noninteractive `--json` path; `--json --privileged` is
+intentionally rejected.
 
 ## License
 

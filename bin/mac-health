@@ -1,0 +1,76 @@
+#!/bin/zsh
+
+set -u
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/../lib/metrics.zsh"
+
+PRIVILEGED=0
+case "${1:-}" in
+  --privileged|-p) PRIVILEGED=1 ;;
+  --help|-h)
+    cat <<'EOF'
+Usage: mac-health [--privileged]
+
+Print a one-shot Apple silicon Mac health and throttling snapshot.
+
+  -p, --privileged  Prompt for sudo and include powermetrics frequency,
+                    power-limit, power, and thermal-pressure telemetry.
+  -h, --help        Show this help.
+EOF
+    exit 0
+    ;;
+  "") ;;
+  *) print -u2 -- "Unknown option: $1"; exit 2 ;;
+esac
+
+mh_collect_all
+mh_assess
+
+print -- "Mac health snapshot — $MH_TIMESTAMP"
+print -- "============================================================"
+print -- "System       $MH_MODEL | ${MH_PHYSICAL_CORES} physical / ${MH_LOGICAL_CORES} logical cores | uptime $MH_UPTIME"
+print -- "CPU          ${MH_CPU_BUSY}% busy (${MH_CPU_USER}% user, ${MH_CPU_SYS}% system, ${MH_CPU_IDLE}% idle)"
+print -- "Load         $MH_LOAD_1 / $MH_LOAD_5 / $MH_LOAD_15 | ${MH_LOAD_PER_CORE}× cores at 1 minute"
+print -- "Memory       ${MH_MEMORY_FREE_PCT}% free by pressure accounting | ${MH_MEMORY_TOTAL_GB} GB installed"
+print -- "Swap         ${MH_SWAP_USED_MB} / ${MH_SWAP_TOTAL_MB} MB used | cumulative swapouts $MH_SWAPOUTS"
+print -- "Battery      ${MH_BATTERY_PCT}% | $MH_BATTERY_STATE | ${MH_BATTERY_TEMP_C}°C / ${MH_BATTERY_TEMP_F}°F | cycles $MH_CYCLE_COUNT"
+print -- "Thermals     thermal=$MH_THERMAL_STATE | performance=$MH_PERFORMANCE_STATE | low-power-mode=$MH_LOW_POWER_MODE"
+print -- "Startup disk ${MH_DISK_FREE_GB} GB free (${MH_DISK_FREE_PCT}%)"
+
+print -- ""
+print -- "Assessment"
+print -- "----------"
+local finding
+for finding in "${MH_FINDINGS[@]}"; do
+  print -- "[${finding%%|*}] ${finding#*|}"
+done
+
+print -- ""
+print -- "Top CPU processes"
+print -- "-----------------"
+printf '%-7s %7s %7s %9s  %s\n' PID CPU% MEM% RSS-MB COMMAND
+ps -Ao pid=,pcpu=,pmem=,rss=,comm= 2>/dev/null \
+  | sort -k2 -nr \
+  | head -8 \
+  | awk '{rss=$4/1024; cmd=$5; for(i=6;i<=NF;i++) cmd=cmd " " $i; printf "%-7s %7s %7s %9.1f  %s\n",$1,$2,$3,rss,cmd}'
+
+print -- ""
+print -- "Thermal evidence"
+print -- "----------------"
+print -r -- "$MH_THERMAL_TEXT"
+
+if (( PRIVILEGED )); then
+  print -- ""
+  print -- "Privileged powermetrics sample"
+  print -- "------------------------------"
+  print -- "This one-second sample may prompt for your macOS password."
+  sudo powermetrics --samplers thermal,cpu_power,gpu_power --show-plimits -n 1 -i 1000 2>&1 \
+    | grep -E '^[[:space:]]*(CPU|GPU|ANE|Thermal|Combined Power|Package Power|System Average)' \
+    || true
+else
+  print -- ""
+  print -- "For privileged frequency, power-limit, power, and thermal-pressure telemetry:"
+  print -- "  $0 --privileged"
+  print -- "Exact CPU/GPU die temperatures are not exposed by built-in tools on this macOS release."
+fi

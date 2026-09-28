@@ -1,0 +1,114 @@
+#!/bin/zsh
+
+set -u
+
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/../lib/metrics.zsh"
+
+INTERVAL=5
+SAMPLES=12
+CSV=""
+
+usage() {
+  cat <<'EOF'
+Usage: mac-health-watch [-i seconds] [-n samples] [--csv path]
+
+Sample the signals that distinguish sustained pressure from a momentary spike.
+Defaults to 12 samples at 5-second intervals (about one minute).
+
+  -i, --interval N  Seconds between samples (minimum 1)
+  -n, --samples N   Number of samples (minimum 2)
+      --csv PATH    Also write machine-readable samples to PATH
+  -h, --help        Show this help
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    -i|--interval) INTERVAL="${2:-}"; shift 2 ;;
+    -n|--samples) SAMPLES="${2:-}"; shift 2 ;;
+    --csv) CSV="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) print -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+done
+
+if ! [[ "$INTERVAL" == <-> ]] || (( INTERVAL < 1 )); then
+  print -u2 -- "Interval must be an integer >= 1."
+  exit 2
+fi
+if ! [[ "$SAMPLES" == <-> ]] || (( SAMPLES < 2 )); then
+  print -u2 -- "Samples must be an integer >= 2."
+  exit 2
+fi
+
+if [[ -n "$CSV" ]]; then
+  print -- 'timestamp,cpu_busy_pct,load_1,load_per_core,memory_free_pct,swap_used_mb,swapouts,battery_temp_c,thermal_state,performance_state,stuck_processes' > "$CSV"
+fi
+
+print -- "Mac pressure watch — $SAMPLES samples every ${INTERVAL}s"
+printf '%-9s %7s %7s %8s %8s %10s %9s %9s %s\n' TIME CPU% LOAD1 LOAD/CORE MEMFREE SWAP-MB SWAPOUTS BATT-C STATE
+
+typeset -i i=1 warnings=0
+typeset -F 1 max_cpu=0
+typeset -F 2 max_load_per_core=0
+typeset -F 0 min_mem=100
+typeset -F 1 max_battery=0
+typeset -i first_swapouts=0 last_swapouts=0
+
+while (( i <= SAMPLES )); do
+  mh_cpu_sample
+  mh_memory_sample
+  mh_battery_sample
+  mh_thermal_sample
+
+  local state="OK"
+  if [[ "$MH_THERMAL_STATE" != "clear" || "$MH_PERFORMANCE_STATE" != "clear" ]]; then
+    state="THERMAL"
+    (( warnings++ ))
+  elif mh_float_lt "$MH_CPU_IDLE" 5 || mh_float_gt "$MH_LOAD_PER_CORE" 1.25 || mh_float_lt "$MH_MEMORY_FREE_PCT" 10; then
+    state="PRESSURE"
+    (( warnings++ ))
+  elif [[ "$MH_LOW_POWER_MODE" == "1" ]]; then
+    state="LOW-POWER"
+  fi
+
+  (( i == 1 )) && first_swapouts=$MH_SWAPOUTS
+  last_swapouts=$MH_SWAPOUTS
+  mh_float_gt "$MH_CPU_BUSY" "$max_cpu" && max_cpu=$MH_CPU_BUSY
+  mh_float_gt "$MH_LOAD_PER_CORE" "$max_load_per_core" && max_load_per_core=$MH_LOAD_PER_CORE
+  mh_float_lt "$MH_MEMORY_FREE_PCT" "$min_mem" && min_mem=$MH_MEMORY_FREE_PCT
+  if [[ "$MH_BATTERY_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_BATTERY_TEMP_C" "$max_battery"; then
+    max_battery=$MH_BATTERY_TEMP_C
+  fi
+
+  printf '%-9s %7s %7s %8s %7s%% %10s %9s %9s %s\n' \
+    "$(date '+%H:%M:%S')" "$MH_CPU_BUSY" "$MH_LOAD_1" "$MH_LOAD_PER_CORE" \
+    "$MH_MEMORY_FREE_PCT" "$MH_SWAP_USED_MB" "$MH_SWAPOUTS" "$MH_BATTERY_TEMP_C" "$state"
+
+  if [[ -n "$CSV" ]]; then
+    print -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ'),$MH_CPU_BUSY,$MH_LOAD_1,$MH_LOAD_PER_CORE,$MH_MEMORY_FREE_PCT,$MH_SWAP_USED_MB,$MH_SWAPOUTS,$MH_BATTERY_TEMP_C,$MH_THERMAL_STATE,$MH_PERFORMANCE_STATE,$MH_STUCK_PROCESSES" >> "$CSV"
+  fi
+
+  (( i++ ))
+  (( i <= SAMPLES )) && sleep "$INTERVAL"
+done
+
+local swapout_delta=$(( last_swapouts - first_swapouts ))
+print -- ""
+print -- "Watch summary"
+print -- "-------------"
+printf 'Peak CPU busy: %.1f%% | peak load/core: %.2f×\n' "$max_cpu" "$max_load_per_core"
+printf 'Lowest memory free: %.0f%% | new swapouts: %d | peak battery: %.1f°C\n' "$min_mem" "$swapout_delta" "$max_battery"
+
+if (( warnings > 0 )); then
+  print -- "[WARN] $warnings/$SAMPLES samples crossed a pressure threshold. Run mac-health --privileged if heat is the suspected cause."
+elif (( swapout_delta > 0 )); then
+  print -- "[INFO] No thermal warning, but swapouts increased during the window; memory pressure may be contributing to latency."
+else
+  print -- "[OK] No sustained thermal/throttling signal or memory-pressure growth was observed."
+fi
+
+[[ -n "$CSV" ]] && print -- "CSV written to: $CSV"
+
+exit 0

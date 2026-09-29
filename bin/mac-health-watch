@@ -125,7 +125,7 @@ while (( i <= SAMPLES )); do
 
   (( i++ ))
   if (( i <= SAMPLES )); then
-    local work_elapsed delay
+    local work_elapsed="" delay=""
     work_elapsed="$(awk -v now="$EPOCHREALTIME" -v start="$sample_time" 'BEGIN {printf "%.3f",now-start}')"
     delay="$(awk -v interval="$INTERVAL" -v work="$work_elapsed" 'BEGIN {d=interval-work; if(d<0)d=0; printf "%.3f",d}')"
     mh_float_gt "$delay" 0 && sleep "$delay"

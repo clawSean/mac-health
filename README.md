@@ -31,7 +31,7 @@ background service.
 ```
 
 Add the slower one-second disk sample, network path checks, OpenClaw internals,
-and recent fault history:
+and fast local diagnostic-report history:
 
 ```bash
 ./bin/mac-health --extended
@@ -71,6 +71,20 @@ temperatures, fan RPM, clocks, activity, and power. `mac-health` discovers it on
 `PATH` and remains fully usable when it is absent. It does not install a daemon
 or run in the background.
 
+## Forensic fault history
+
+Routine `mac-health`, `mac-health --extended`, and `mac-health-watch` never query
+the macOS unified log. The query is isolated in a separate, root-only command:
+
+```bash
+sudo ./bin/mac-health-fault-history --last 1h
+```
+
+Use it only after a concrete incident such as an unexpected reboot, storage I/O
+failure, thermal shutdown, or broken sleep/wake cycle. It is never called by the
+routine tools, never scheduled, and caps queries at 24 hours to avoid the slow
+multi-day archive scan.
+
 ## Reading the result
 
 - **Thermal/performance warning:** direct evidence macOS has entered a constrained state.
@@ -89,9 +103,8 @@ The built-in tools do not expose exact CPU/GPU die temperatures on this machine.
 When `macmon` is available, the script adds its average CPU/GPU sensor readings;
 the authoritative macOS thermal state remains the primary throttling signal.
 
-Recent unified-log searches may report `permission-denied` when the calling shell
-lacks sufficient access. That is reported as unavailable—not silently converted
-to zero events. No background log scanner is installed.
+Unified-log forensics require a deliberate root invocation of the separate
+command. No background log scanner or cache is installed.
 
 ## Requirements
 

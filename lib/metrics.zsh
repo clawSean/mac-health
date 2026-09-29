@@ -391,11 +391,9 @@ mh_openclaw_extended_sample() {
 }
 
 mh_fault_sample() {
-  local cutoff report_file power_log log_file log_error unified_output report_dir
+  local cutoff report_file power_log report_dir
   cutoff="$(date -v-7d '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')"
   report_file="$(mktemp "${TMPDIR:-/tmp}/mac-health-reports.XXXXXX")"
-  log_file="$(mktemp "${TMPDIR:-/tmp}/mac-health-log.XXXXXX")"
-  log_error="$(mktemp "${TMPDIR:-/tmp}/mac-health-log-error.XXXXXX")"
   : >"$report_file"
   for report_dir in /Library/Logs/DiagnosticReports "$HOME/Library/Logs/DiagnosticReports"; do
     [[ -d "$report_dir" ]] && find "$report_dir" -maxdepth 1 -type f -mtime -7 -print 2>/dev/null >>"$report_file"
@@ -407,19 +405,8 @@ mh_fault_sample() {
   MH_THERMAL_SHUTDOWNS_7D="$(print -r -- "$power_log" | grep -Eic 'thermal.*shutdown|shutdown.*thermal' || true)"
   MH_FORCED_REBOOTS_7D="$(print -r -- "$power_log" | grep -Eic 'forced.*(restart|reboot|shutdown)|unexpected.*shutdown' || true)"
   MH_STORAGE_IO_ERRORS_24H="unknown"
-  MH_UNIFIED_LOG_STATUS="unavailable"
-  if [[ -x /usr/bin/log ]]; then
-    if /usr/bin/log show --last 24h --style compact --predicate '(eventMessage CONTAINS[c] "I/O error") OR (eventMessage CONTAINS[c] "thermal shutdown")' >"$log_file" 2>"$log_error"; then
-      unified_output="$(grep -Ev '^Timestamp' "$log_file" || true)"
-      MH_STORAGE_IO_ERRORS_24H="$(print -r -- "$unified_output" | grep -Eic 'I/O error|thermal shutdown' || true)"
-      MH_UNIFIED_LOG_STATUS="ok"
-    elif grep -qi 'not permitted\|permission' "$log_error"; then
-      MH_UNIFIED_LOG_STATUS="permission-denied"
-    else
-      MH_UNIFIED_LOG_STATUS="error"
-    fi
-  fi
-  rm -f -- "$report_file" "$log_file" "$log_error"
+  MH_UNIFIED_LOG_STATUS="not-requested"
+  rm -f -- "$report_file"
 }
 
 mh_collect_all() {

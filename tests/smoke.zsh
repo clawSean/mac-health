@@ -3,7 +3,7 @@
 set -eu
 
 ROOT="${0:A:h:h}"
-zsh -n "$ROOT/lib/metrics.zsh" "$ROOT/bin/mac-health" "$ROOT/bin/mac-health-watch"
+zsh -n "$ROOT/lib/metrics.zsh" "$ROOT/bin/mac-health" "$ROOT/bin/mac-health-watch" "$ROOT/bin/mac-health-fault-history"
 
 validate_json() {
   local json_path="$1"
@@ -55,7 +55,11 @@ validate_json "$json_file"
 [[ "$(plutil -extract extended raw -o - "$json_file")" == "true" ]]
 plutil -extract disk.sample.transfersPerSec raw -o - "$json_file" >/dev/null
 plutil -extract openclaw.sqlite.queryOk raw -o - "$json_file" >/dev/null
-plutil -extract recentFaults.unifiedLogStatus raw -o - "$json_file" >/dev/null
+[[ "$(plutil -extract recentFaults.unifiedLogStatus raw -o - "$json_file")" == "not-requested" ]]
+
+fault_help="$($ROOT/bin/mac-health-fault-history --help)"
+[[ "$fault_help" == *'Forensic-only'* ]]
+[[ "$fault_help" == *'never called by mac-health'* ]]
 
 watch_output="$($ROOT/bin/mac-health-watch --interval 1 --samples 2 --csv "$csv_file")"
 [[ "$watch_output" == *'Watch summary'* ]]

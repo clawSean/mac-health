@@ -23,3 +23,5 @@
 - Proved that Full Disk Access alone does not permit system `OSLogStore` history on
   macOS 26. A cached privileged prototype was rejected because its initial
   seven-day scan burned a CPU core for too long; no background scanner is shipped.
+- Hard-separated unified-log forensics into a root-only, explicitly invoked
+  command capped at 24 hours; routine and extended checks cannot call it.

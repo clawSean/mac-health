@@ -16,14 +16,16 @@ Usage: mac-health [--extended] [--json] [--privileged]
 Print a one-shot Apple silicon Mac health and throttling snapshot.
 
   -e, --extended    Add a one-second disk sample, network path probes,
-                    OpenClaw queue/SQLite health, and recent fault history.
+                    OpenClaw queue/SQLite health, and fast local fault reports.
       --json        Emit stable schema-versioned JSON for automation.
   -p, --privileged  Prompt for sudo and include powermetrics frequency,
                     power-limit, GPU/ANE power, and per-process I/O telemetry.
   -h, --help        Show this help.
 
 The default path is fast, read-only, and never prompts. --extended is slower
-but remains unprivileged. --json and --privileged cannot be combined.
+but remains unprivileged. Neither mode queries unified logs. Use the separate
+mac-health-fault-history command only for deliberate incident forensics.
+--json and --privileged cannot be combined.
 EOF
 }
 
@@ -111,7 +113,7 @@ if (( EXTENDED )); then
   print -- "OC tasks     active=$MH_OC_TASKS_ACTIVE | queued=$MH_OC_TASKS_QUEUED | running=$MH_OC_TASKS_RUNNING | historical failures=$MH_OC_TASK_FAILURES_TOTAL"
   print -- "OC SQLite    query=${MH_OC_SQLITE_QUERY_MS} ms (ok=$MH_OC_SQLITE_QUERY_OK) | WAL warning=$MH_OC_SQLITE_WAL_WARNING | blocked=$MH_OC_SQLITE_BLOCKED | WAL bytes=$MH_OC_SQLITE_WAL_BYTES"
   print -- "Recent faults panic/reboot reports=$MH_PANIC_REPORTS_7D | hangs/spins=$MH_HANG_REPORTS_7D | sleep/wake failures=$MH_SLEEP_WAKE_FAILURES_7D | thermal shutdowns=$MH_THERMAL_SHUTDOWNS_7D"
-  print -- "Unified log  status=$MH_UNIFIED_LOG_STATUS | I/O or thermal events (24h)=$MH_STORAGE_IO_ERRORS_24H"
+  print -- "Unified log  skipped by design (forensic opt-in: mac-health-fault-history)"
   print -- "Note         Native iostat has no latency/per-process split; privileged powermetrics adds per-process I/O."
 fi
 

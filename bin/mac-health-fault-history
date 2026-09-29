@@ -1,0 +1,83 @@
+#!/bin/zsh
+
+set -u
+
+WINDOW="1h"
+JSON=0
+
+usage() {
+  cat <<'EOF'
+Usage: mac-health-fault-history [--last 1h|6h|24h] [--json]
+
+Forensic-only macOS unified-log query for a specific incident window.
+
+This command is never called by mac-health, mac-health --extended, or
+mac-health-watch. It is never scheduled and intentionally requires root.
+Multi-day windows are rejected because Apple unified-log scans can be expensive.
+
+      --last WINDOW  Query 1h, 6h, or 24h (default: 1h).
+      --json         Emit compact JSON counts.
+  -h, --help         Show this help without querying logs.
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --last)
+      shift
+      (( $# > 0 )) || { print -u2 -- "--last requires 1h, 6h, or 24h"; exit 2; }
+      WINDOW="$1"
+      ;;
+    --json) JSON=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) print -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+case "$WINDOW" in
+  1h|6h|24h) ;;
+  *) print -u2 -- "Unsupported window '$WINDOW'; choose 1h, 6h, or 24h."; exit 2 ;;
+esac
+
+if (( EUID != 0 )); then
+  print -u2 -- "Forensic unified-log access requires a deliberate administrator run."
+  if (( JSON )); then
+    print -u2 -- "Run: sudo $0 --last $WINDOW --json"
+  else
+    print -u2 -- "Run: sudo $0 --last $WINDOW"
+  fi
+  exit 77
+fi
+
+typeset log_file error_file
+log_file="$(mktemp "${TMPDIR:-/tmp}/mac-health-forensic-log.XXXXXX")"
+error_file="$(mktemp "${TMPDIR:-/tmp}/mac-health-forensic-error.XXXXXX")"
+trap 'rm -f -- "$log_file" "$error_file"' EXIT
+
+predicate='(process == "kernel" OR process == "powerd" OR process == "thermalmonitord" OR process == "watchdogd" OR process == "diskarbitrationd" OR process == "storagekitd" OR process == "fskitd" OR process == "apfsd") AND (eventMessage CONTAINS[c] "I/O error" OR eventMessage CONTAINS[c] "NVMe error" OR eventMessage CONTAINS[c] "media error" OR eventMessage CONTAINS[c] "thermal shutdown" OR eventMessage CONTAINS[c] "previous shutdown cause" OR eventMessage CONTAINS[c] "unexpected shutdown" OR eventMessage CONTAINS[c] "sleep wake failure" OR eventMessage CONTAINS[c] "wake transition timed out")'
+
+print -u2 -- "Forensic-only unified-log scan: $WINDOW (not part of routine health checks)."
+if ! /usr/bin/log show --last "$WINDOW" --style compact --predicate "$predicate" >"$log_file" 2>"$error_file"; then
+  print -u2 -- "Unified-log query failed: $(<"$error_file")"
+  exit 70
+fi
+
+typeset -i storage thermal reboot sleepwake total
+storage="$(grep -Eic 'I/O error|NVMe error|media error' "$log_file" || true)"
+thermal="$(grep -Eic 'thermal shutdown' "$log_file" || true)"
+reboot="$(grep -Eic 'previous shutdown cause|unexpected shutdown' "$log_file" || true)"
+sleepwake="$(grep -Eic 'sleep wake failure|wake transition timed out' "$log_file" || true)"
+total=$(( storage + thermal + reboot + sleepwake ))
+
+if (( JSON )); then
+  print -- "{\"schemaVersion\":1,\"window\":\"$WINDOW\",\"storageIo\":$storage,\"thermalShutdown\":$thermal,\"unexpectedReboot\":$reboot,\"sleepWakeFailure\":$sleepwake,\"total\":$total}"
+else
+  print -- "Forensic unified-log history — last $WINDOW"
+  print -- "================================================"
+  print -- "Storage I/O matches:       $storage"
+  print -- "Thermal-shutdown matches:  $thermal"
+  print -- "Unexpected-reboot matches: $reboot"
+  print -- "Sleep/wake-failure matches:$sleepwake"
+  print -- "Total sanitized matches:   $total"
+fi

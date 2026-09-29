@@ -4,6 +4,10 @@ set -eu
 
 ROOT="${0:A:h:h}"
 zsh -n "$ROOT/lib/metrics.zsh" "$ROOT/bin/mac-health" "$ROOT/bin/mac-health-watch" "$ROOT/bin/mac-health-fault-history"
+source "$ROOT/lib/metrics.zsh"
+[[ "$(mh_normalize_temperature 0)" == "unknown" ]]
+[[ "$(mh_normalize_temperature unknown)" == "unknown" ]]
+[[ "$(mh_normalize_temperature 60.24)" == "60.2" ]]
 
 validate_json() {
   local json_path="$1"

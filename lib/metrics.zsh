@@ -193,6 +193,13 @@ mh_gpu_sample() {
   MH_GPU_TILER_UTIL_PCT="${MH_GPU_TILER_UTIL_PCT:-unknown}"
 }
 
+mh_normalize_temperature() {
+  awk -v value="$1" 'BEGIN {
+    if (value == "unknown" || value + 0 <= 0) print "unknown"
+    else printf "%.1f", value
+  }'
+}
+
 mh_sensor_defaults() {
   MH_SENSOR_SOURCE="unavailable"
   MH_CPU_TEMP_C="unknown"
@@ -230,8 +237,8 @@ mh_sensor_finish() {
   [[ -n "$MH_SENSOR_PID" && -n "$MH_SENSOR_TEMP_FILE" ]] || return 0
   if wait "$MH_SENSOR_PID" 2>/dev/null && [[ -s "$MH_SENSOR_TEMP_FILE" ]]; then
     MH_SENSOR_SOURCE="macmon"
-    MH_CPU_TEMP_C="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.cpu_temp_avg unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
-    MH_GPU_TEMP_C="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.gpu_temp_avg unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_CPU_TEMP_C="$(mh_normalize_temperature "$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.cpu_temp_avg unknown)")"
+    MH_GPU_TEMP_C="$(mh_normalize_temperature "$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.gpu_temp_avg unknown)")"
     MH_FAN0_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.0.rpm unknown)"
     MH_FAN0_MAX_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.0.max_rpm unknown)"
     MH_FAN1_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.1.rpm unknown)"

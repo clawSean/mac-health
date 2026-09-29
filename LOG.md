@@ -25,3 +25,5 @@
   seven-day scan burned a CPU core for too long; no background scanner is shipped.
 - Hard-separated unified-log forensics into a root-only, explicitly invoked
   command capped at 24 hours; routine and extended checks cannot call it.
+- Treat zero-valued CPU/GPU temperatures from intermittent `macmon` sensor
+  dropouts as unavailable instead of displaying an impossible `0°C` reading.

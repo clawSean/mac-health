@@ -4,13 +4,15 @@
 ![Zsh](https://img.shields.io/badge/shell-zsh-1A2C34?logo=gnu-bash)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-Native macOS health and throttling diagnostics for Apple silicon—no Homebrew
-packages, agents, daemons, or background services required.
+Native macOS health and throttling diagnostics for Apple silicon. The core path
+uses built-in tools; optional `macmon` sensors add exact temperatures without a
+background service.
 
 ## What it checks
 
 - CPU utilization, load averages, core-normalized scheduling pressure, and top processes
-- macOS thermal and performance warnings (the strongest non-root throttling signal)
+- macOS thermal and performance warnings plus optional CPU/GPU temperatures,
+  fans, clocks, utilization, and power from `macmon`
 - Memory pressure, compression, pageouts, swap use, and swapout growth
 - Battery temperature, power flow, adapter wattage, charge state, and cycle count
 - Startup-disk headroom/SMART status, current I/O throughput, and transfer rate
@@ -62,6 +64,13 @@ Or choose the interval/sample count and save a CSV:
 ./bin/mac-health-watch --interval 10 --samples 30 --csv health.csv
 ```
 
+## Optional sensors
+
+Install [`macmon`](https://github.com/vladkens/macmon) to add average CPU/GPU
+temperatures, fan RPM, clocks, activity, and power. `mac-health` discovers it on
+`PATH` and remains fully usable when it is absent. It does not install a daemon
+or run in the background.
+
 ## Reading the result
 
 - **Thermal/performance warning:** direct evidence macOS has entered a constrained state.
@@ -76,15 +85,13 @@ Or choose the interval/sample count and save a CSV:
 - **Battery temperature:** under `35°C` is comfortable, `40–45°C` deserves attention if sustained,
   and above `45°C` is flagged critical by this tool.
 
-The current macOS built-in tools do not expose exact CPU/GPU die temperatures on
-this machine. The script reports the battery sensor temperature and authoritative
-macOS thermal state. The privileged path adds clocks, power limits, GPU/ANE power,
-thermal pressure, and per-process I/O. Those signals and behavior over time are more
-diagnostic than one temperature.
+The built-in tools do not expose exact CPU/GPU die temperatures on this machine.
+When `macmon` is available, the script adds its average CPU/GPU sensor readings;
+the authoritative macOS thermal state remains the primary throttling signal.
 
 Recent unified-log searches may report `permission-denied` when the calling shell
-lacks Full Disk Access. That is reported as unavailable—not silently converted to
-zero events.
+lacks sufficient access. That is reported as unavailable—not silently converted
+to zero events. No background log scanner is installed.
 
 ## Requirements
 
@@ -93,6 +100,7 @@ zero events.
   `memory_pressure`, `vm_stat`, `sysctl`, and optionally `powermetrics`)
 - OpenClaw and Tailscale checks automatically degrade to unavailable when those
   programs are not installed
+- Optional sensor telemetry: `macmon` on `PATH`
 
 ## Test
 

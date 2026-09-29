@@ -18,3 +18,8 @@
   and privileged GPU/ANE power plus per-process I/O sampling.
 - Kept unavailable native signals honest: exact CPU/GPU die temperatures and
   unprivileged disk latency/per-process I/O remain explicitly unsupported.
+- Added optional `macmon` CPU/GPU temperatures, fans, clocks, activity, and power
+  without slowing the fast snapshot.
+- Proved that Full Disk Access alone does not permit system `OSLogStore` history on
+  macOS 26. A cached privileged prototype was rejected because its initial
+  seven-day scan burned a CPU core for too long; no background scanner is shipped.

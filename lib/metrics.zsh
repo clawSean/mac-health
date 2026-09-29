@@ -193,6 +193,65 @@ mh_gpu_sample() {
   MH_GPU_TILER_UTIL_PCT="${MH_GPU_TILER_UTIL_PCT:-unknown}"
 }
 
+mh_sensor_defaults() {
+  MH_SENSOR_SOURCE="unavailable"
+  MH_CPU_TEMP_C="unknown"
+  MH_GPU_TEMP_C="unknown"
+  MH_FAN0_RPM="unknown"
+  MH_FAN0_MAX_RPM="unknown"
+  MH_FAN1_RPM="unknown"
+  MH_FAN1_MAX_RPM="unknown"
+  MH_CPU_POWER_W="unknown"
+  MH_GPU_POWER_W="unknown"
+  MH_ANE_POWER_W="unknown"
+  MH_SOC_POWER_W="unknown"
+  MH_SYSTEM_POWER_W="unknown"
+  MH_ECPU_FREQ_MHZ="unknown"
+  MH_PCPU_FREQ_MHZ="unknown"
+  MH_GPU_FREQ_MHZ="unknown"
+  MH_CPU_ACTIVE_PCT="unknown"
+  MH_GPU_ACTIVE_PCT="unknown"
+  MH_SENSOR_TEMP_FILE=""
+  MH_SENSOR_PID=""
+}
+
+mh_sensor_start() {
+  mh_sensor_defaults
+  local macmon_bin
+  macmon_bin="$(command -v macmon 2>/dev/null || true)"
+  if [[ -x "$macmon_bin" ]]; then
+    MH_SENSOR_TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/mac-health-sensors.XXXXXX")"
+    "$macmon_bin" pipe --samples 1 --interval 100 >"$MH_SENSOR_TEMP_FILE" 2>/dev/null &
+    MH_SENSOR_PID=$!
+  fi
+}
+
+mh_sensor_finish() {
+  [[ -n "$MH_SENSOR_PID" && -n "$MH_SENSOR_TEMP_FILE" ]] || return 0
+  if wait "$MH_SENSOR_PID" 2>/dev/null && [[ -s "$MH_SENSOR_TEMP_FILE" ]]; then
+    MH_SENSOR_SOURCE="macmon"
+    MH_CPU_TEMP_C="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.cpu_temp_avg unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_GPU_TEMP_C="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" temp.gpu_temp_avg unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_FAN0_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.0.rpm unknown)"
+    MH_FAN0_MAX_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.0.max_rpm unknown)"
+    MH_FAN1_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.1.rpm unknown)"
+    MH_FAN1_MAX_RPM="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" fans.1.max_rpm unknown)"
+    MH_CPU_POWER_W="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" cpu_power unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_GPU_POWER_W="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" gpu_power unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_ANE_POWER_W="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" ane_power unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_SOC_POWER_W="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" all_power unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_SYSTEM_POWER_W="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" sys_power unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v}')"
+    MH_ECPU_FREQ_MHZ="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" ecpu_freq_mhz unknown)"
+    MH_PCPU_FREQ_MHZ="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" pcpu_freq_mhz unknown)"
+    MH_GPU_FREQ_MHZ="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" gpu_freq_mhz unknown)"
+    MH_CPU_ACTIVE_PCT="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" cpu_active_ratio unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v*100}')"
+    MH_GPU_ACTIVE_PCT="$(awk -v v="$(mh_plutil_raw "$MH_SENSOR_TEMP_FILE" gpu_active_ratio unknown)" 'BEGIN {if(v=="unknown")print v; else printf "%.1f",v*100}')"
+  fi
+  rm -f -- "$MH_SENSOR_TEMP_FILE"
+  MH_SENSOR_TEMP_FILE=""
+  MH_SENSOR_PID=""
+}
+
 mh_network_counter_sample() {
   local route row
   route="$(route -n get default 2>/dev/null || true)"
@@ -370,6 +429,7 @@ mh_collect_all() {
   MH_MODEL="$(sysctl -n hw.model 2>/dev/null || uname -m)"
   MH_UPTIME="$(uptime | sed -E 's/.*up (.*), [0-9]+ users?.*/\1/' | sed -E 's/, load averages:.*//')"
   MH_EXTENDED="$extended"
+  mh_sensor_start
   mh_cpu_sample
   mh_memory_sample
   mh_battery_sample
@@ -378,6 +438,7 @@ mh_collect_all() {
   mh_gpu_sample
   mh_network_counter_sample
   mh_openclaw_process_sample
+  mh_sensor_finish
 
   MH_DISK_IO_DEVICE="unknown"; MH_DISK_KB_PER_TRANSFER="unknown"; MH_DISK_TRANSFERS_PER_SEC="unknown"; MH_DISK_MB_PER_SEC="unknown"; MH_DISK_LATENCY_MS="unavailable"
   MH_DNS_OK="unknown"; MH_DNS_LATENCY_MS="unknown"; MH_LAN_GATEWAY_RTT_MS="unknown"; MH_TAILSCALE_BACKEND="unknown"; MH_TAILSCALE_ONLINE_PEERS="unknown"
@@ -434,6 +495,18 @@ mh_assess() {
       MH_FINDINGS+=("WARN|Battery temperature is ${MH_BATTERY_TEMP_C}°C; warm enough to watch if sustained.")
       [[ "$MH_WORST" == "ok" ]] && MH_WORST="warn"
     fi
+  fi
+  if [[ "$MH_CPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_CPU_TEMP_C" 105; then
+    MH_FINDINGS+=("WARN|CPU sensor average is ${MH_CPU_TEMP_C}°C; confirm macOS thermal pressure and sustained clocks.")
+    [[ "$MH_WORST" == "ok" ]] && MH_WORST="warn"
+  elif [[ "$MH_CPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_CPU_TEMP_C" 95; then
+    MH_FINDINGS+=("INFO|CPU sensor average is ${MH_CPU_TEMP_C}°C under load; macOS still reports thermal state '$MH_THERMAL_STATE'.")
+  fi
+  if [[ "$MH_GPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_GPU_TEMP_C" 95; then
+    MH_FINDINGS+=("WARN|GPU sensor average is ${MH_GPU_TEMP_C}°C; watch for a macOS thermal-pressure warning if sustained.")
+    [[ "$MH_WORST" == "ok" ]] && MH_WORST="warn"
+  elif [[ "$MH_GPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_GPU_TEMP_C" 90; then
+    MH_FINDINGS+=("INFO|GPU sensor average is ${MH_GPU_TEMP_C}°C under load; macOS still reports thermal state '$MH_THERMAL_STATE'.")
   fi
   if mh_float_lt "$MH_DISK_FREE_PCT" 10; then
     MH_FINDINGS+=("WARN|Startup disk has only ${MH_DISK_FREE_PCT}% free; low space can hurt VM and update behavior.")

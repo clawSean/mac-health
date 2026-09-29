@@ -25,6 +25,8 @@ for needle in \
   'Swap' \
   'Battery' \
   'Thermals' \
+  'Sensors' \
+  'Power/clocks' \
   'GPU' \
   'Network' \
   'OpenClaw' \
@@ -45,6 +47,8 @@ validate_json "$json_file"
 [[ "$(plutil -extract schemaVersion raw -o - "$json_file")" == "1" ]]
 [[ "$(plutil -extract extended raw -o - "$json_file")" == "false" ]]
 plutil -extract openclaw.gateway.fileDescriptors raw -o - "$json_file" >/dev/null
+plutil -extract thermal.cpuTemperatureC raw -o - "$json_file" >/dev/null
+plutil -extract sensors.powerWatts.gpu raw -o - "$json_file" >/dev/null
 
 $ROOT/bin/mac-health --extended --json > "$json_file"
 validate_json "$json_file"
@@ -60,7 +64,7 @@ if [[ "$watch_output" != *'[OK]'* && "$watch_output" != *'[INFO]'* && "$watch_ou
   exit 1
 fi
 [[ "$(wc -l < "$csv_file" | tr -d ' ')" == "3" ]]
-[[ "$(awk -F, 'NR==1 {print NF}' "$csv_file")" == "19" ]]
-[[ "$(awk -F, 'NR==2 {print NF}' "$csv_file")" == "19" ]]
+[[ "$(awk -F, 'NR==1 {print NF}' "$csv_file")" == "21" ]]
+[[ "$(awk -F, 'NR==2 {print NF}' "$csv_file")" == "21" ]]
 
 print -- "smoke: PASS"

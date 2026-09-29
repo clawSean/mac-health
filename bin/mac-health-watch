@@ -45,18 +45,18 @@ if ! [[ "$SAMPLES" == <-> ]] || (( SAMPLES < 2 )); then
 fi
 
 if [[ -n "$CSV" ]]; then
-  print -- 'timestamp,cpu_busy_pct,load_1,load_per_core,memory_free_pct,compressed_mb,swap_used_mb,swapouts,pageouts,disk_mb_s,network_mb_s,gpu_util_pct,openclaw_cpu_pct,openclaw_rss_mb,openclaw_log_kb,battery_temp_c,thermal_state,performance_state,stuck_processes' > "$CSV"
+  print -- 'timestamp,cpu_busy_pct,load_1,load_per_core,memory_free_pct,compressed_mb,swap_used_mb,swapouts,pageouts,disk_mb_s,network_mb_s,gpu_util_pct,cpu_temp_c,gpu_temp_c,openclaw_cpu_pct,openclaw_rss_mb,openclaw_log_kb,battery_temp_c,thermal_state,performance_state,stuck_processes' > "$CSV"
 fi
 
 print -- "Mac pressure watch — $SAMPLES samples every ${INTERVAL}s"
-printf '%-9s %6s %7s %7s %8s %8s %8s %6s %6s %s\n' TIME CPU% LOAD/C MEMFREE SWAP-MB DISK-MB NET-MB GPU% OC-CPU STATE
+printf '%-9s %6s %7s %7s %8s %8s %8s %6s %6s %6s %6s %s\n' TIME CPU% LOAD/C MEMFREE SWAP-MB DISK-MB NET-MB GPU% CPU-C GPU-C OC-CPU STATE
 
 typeset -i i=1 warnings=0
 typeset -F 1 max_cpu=0 max_disk_rate=0 max_oc_cpu=0
 typeset -F 2 max_net_rate=0
 typeset -F 2 max_load_per_core=0
 typeset -F 0 min_mem=100 max_gpu=0
-typeset -F 1 max_battery=0
+typeset -F 1 max_battery=0 max_cpu_temp=0 max_gpu_temp=0
 typeset -i first_swapouts=0 last_swapouts=0 first_pageouts=0 last_pageouts=0
 typeset -i first_net_errors=0 last_net_errors=0
 typeset -F 3 previous_time=0 previous_disk_mb=0
@@ -64,6 +64,7 @@ typeset -i previous_network_bytes=0 first_log_kb=0 last_log_kb=0
 
 while (( i <= SAMPLES )); do
   local sample_time="$EPOCHREALTIME"
+  mh_sensor_start
   mh_cpu_sample
   mh_memory_sample
   mh_battery_sample
@@ -72,8 +73,11 @@ while (( i <= SAMPLES )); do
   mh_network_counter_sample
   mh_gpu_sample
   mh_openclaw_process_sample
+  mh_sensor_finish
 
   local elapsed=0 disk_rate=0 net_rate=0 state="OK"
+  local current_gpu_pct="$MH_GPU_DEVICE_UTIL_PCT"
+  [[ "$MH_GPU_ACTIVE_PCT" != "unknown" ]] && current_gpu_pct="$MH_GPU_ACTIVE_PCT"
   local network_bytes=$(( MH_NETWORK_RX_BYTES + MH_NETWORK_TX_BYTES ))
   local network_errors=$(( MH_NETWORK_RX_ERRORS + MH_NETWORK_TX_ERRORS ))
   if (( i > 1 )); then
@@ -90,6 +94,9 @@ while (( i <= SAMPLES )); do
     (( warnings++ ))
   elif mh_float_lt "$MH_CPU_IDLE" 5 || mh_float_gt "$MH_LOAD_PER_CORE" 1.25 || mh_float_lt "$MH_MEMORY_FREE_PCT" 10; then
     state="PRESSURE"
+    (( warnings++ ))
+  elif { [[ "$MH_CPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_CPU_TEMP_C" 105; } || { [[ "$MH_GPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_GPU_TEMP_C" 95; }; then
+    state="HOT"
     (( warnings++ ))
   elif [[ "$MH_LOW_POWER_MODE" == "1" ]]; then
     state="LOW-POWER"
@@ -111,16 +118,18 @@ while (( i <= SAMPLES )); do
   mh_float_lt "$MH_MEMORY_FREE_PCT" "$min_mem" && min_mem=$MH_MEMORY_FREE_PCT
   mh_float_gt "$disk_rate" "$max_disk_rate" && max_disk_rate=$disk_rate
   mh_float_gt "$net_rate" "$max_net_rate" && max_net_rate=$net_rate
-  [[ "$MH_GPU_DEVICE_UTIL_PCT" != "unknown" ]] && mh_float_gt "$MH_GPU_DEVICE_UTIL_PCT" "$max_gpu" && max_gpu=$MH_GPU_DEVICE_UTIL_PCT
+  [[ "$current_gpu_pct" != "unknown" ]] && mh_float_gt "$current_gpu_pct" "$max_gpu" && max_gpu=$current_gpu_pct
   [[ "$MH_OC_GATEWAY_CPU_PCT" != "unknown" ]] && mh_float_gt "$MH_OC_GATEWAY_CPU_PCT" "$max_oc_cpu" && max_oc_cpu=$MH_OC_GATEWAY_CPU_PCT
   if [[ "$MH_BATTERY_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_BATTERY_TEMP_C" "$max_battery"; then max_battery=$MH_BATTERY_TEMP_C; fi
+  if [[ "$MH_CPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_CPU_TEMP_C" "$max_cpu_temp"; then max_cpu_temp=$MH_CPU_TEMP_C; fi
+  if [[ "$MH_GPU_TEMP_C" != "unknown" ]] && mh_float_gt "$MH_GPU_TEMP_C" "$max_gpu_temp"; then max_gpu_temp=$MH_GPU_TEMP_C; fi
 
-  printf '%-9s %6s %7s %6s%% %8s %8s %8s %6s %6s %s\n' \
+  printf '%-9s %6s %7s %6s%% %8s %8s %8s %6s %6s %6s %6s %s\n' \
     "$(date '+%H:%M:%S')" "$MH_CPU_BUSY" "$MH_LOAD_PER_CORE" "$MH_MEMORY_FREE_PCT" \
-    "$MH_SWAP_USED_MB" "$disk_rate" "$net_rate" "$MH_GPU_DEVICE_UTIL_PCT" "$MH_OC_GATEWAY_CPU_PCT" "$state"
+    "$MH_SWAP_USED_MB" "$disk_rate" "$net_rate" "$current_gpu_pct" "$MH_CPU_TEMP_C" "$MH_GPU_TEMP_C" "$MH_OC_GATEWAY_CPU_PCT" "$state"
 
   if [[ -n "$CSV" ]]; then
-    print -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ'),$MH_CPU_BUSY,$MH_LOAD_1,$MH_LOAD_PER_CORE,$MH_MEMORY_FREE_PCT,$MH_MEMORY_COMPRESSED_MB,$MH_SWAP_USED_MB,$MH_SWAPOUTS,$MH_PAGEOUTS,$disk_rate,$net_rate,$MH_GPU_DEVICE_UTIL_PCT,$MH_OC_GATEWAY_CPU_PCT,$MH_OC_GATEWAY_RSS_MB,$MH_OC_LOG_KB,$MH_BATTERY_TEMP_C,$MH_THERMAL_STATE,$MH_PERFORMANCE_STATE,$MH_STUCK_PROCESSES" >> "$CSV"
+    print -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ'),$MH_CPU_BUSY,$MH_LOAD_1,$MH_LOAD_PER_CORE,$MH_MEMORY_FREE_PCT,$MH_MEMORY_COMPRESSED_MB,$MH_SWAP_USED_MB,$MH_SWAPOUTS,$MH_PAGEOUTS,$disk_rate,$net_rate,$current_gpu_pct,$MH_CPU_TEMP_C,$MH_GPU_TEMP_C,$MH_OC_GATEWAY_CPU_PCT,$MH_OC_GATEWAY_RSS_MB,$MH_OC_LOG_KB,$MH_BATTERY_TEMP_C,$MH_THERMAL_STATE,$MH_PERFORMANCE_STATE,$MH_STUCK_PROCESSES" >> "$CSV"
   fi
 
   (( i++ ))
@@ -141,7 +150,8 @@ print -- "Watch summary"
 print -- "-------------"
 printf 'Peak CPU: %.1f%% | peak load/core: %.2f× | lowest memory free: %.0f%%\n' "$max_cpu" "$max_load_per_core" "$min_mem"
 printf 'Peak disk: %.1f MB/s | peak network: %.2f MB/s | peak GPU: %.0f%% | peak OpenClaw CPU: %.1f%%\n' "$max_disk_rate" "$max_net_rate" "$max_gpu" "$max_oc_cpu"
-printf 'New swapouts: %d | new pageouts: %d | new network errors: %d | OpenClaw log growth: %d KB | peak battery: %.1f°C\n' "$swapout_delta" "$pageout_delta" "$network_error_delta" "$log_delta" "$max_battery"
+printf 'Peak CPU/GPU temperature: %.1f/%.1f°C | peak battery: %.1f°C\n' "$max_cpu_temp" "$max_gpu_temp" "$max_battery"
+printf 'New swapouts: %d | new pageouts: %d | new network errors: %d | OpenClaw log growth: %d KB\n' "$swapout_delta" "$pageout_delta" "$network_error_delta" "$log_delta"
 
 if (( warnings > 0 )); then
   print -- "[WARN] $warnings/$SAMPLES samples crossed a pressure threshold. Run mac-health --extended, then --privileged if heat or power limiting is suspected."
